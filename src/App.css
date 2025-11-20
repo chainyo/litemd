@@ -163,3 +163,144 @@
   --shadow-xl: var(--shadow-xl);
   --shadow-2xl: var(--shadow-2xl);
 }
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+}
+
+.bg-app {
+  background:
+    radial-gradient(circle at 12% 10%, #f2f6ff, #eef1f7 28%, transparent 45%),
+    radial-gradient(circle at 90% 20%, #e9f6ff, #f2f6ff 35%, transparent 50%),
+    var(--background);
+}
+
+.action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  border-radius: 9999px;
+  border: 1px solid var(--border);
+  padding: 0.5rem 0.9rem;
+  background: linear-gradient(135deg, #f8f9fb, #ffffff);
+  color: var(--primary);
+  font-weight: 600;
+  box-shadow: var(--shadow-sm);
+  transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
+}
+
+.action-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-md);
+  border-color: rgba(0, 0, 0, 0.08);
+}
+
+.action-btn.primary {
+  background: linear-gradient(135deg, #111827, #1f2937);
+  color: #f8fafc;
+  border-color: rgba(17, 24, 39, 0.4);
+}
+
+.toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border-radius: 9999px;
+  border: 1px solid var(--border);
+  padding: 0.35rem 0.7rem;
+  background: rgba(0, 0, 0, 0.02);
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border-radius: 0.75rem;
+  border: 1px solid var(--border);
+  padding: 0.45rem 0.75rem;
+  background: #fff;
+  color: var(--primary);
+  font-weight: 600;
+  transition: background-color 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+
+.toolbar-btn:hover {
+  background: #f7f8fa;
+  border-color: rgba(0, 0, 0, 0.08);
+  transform: translateY(-1px);
+}
+
+.editor-surface {
+  min-height: 360px;
+  border-radius: 1rem;
+  border: 1px solid var(--border);
+  padding: 1rem;
+  background: rgba(255, 255, 255, 0.9);
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  color: var(--primary);
+  box-shadow: var(--shadow-md);
+  resize: vertical;
+}
+
+.editor-surface:focus {
+  outline: 2px solid var(--ring);
+  border-color: transparent;
+}
+
+.preview-surface {
+  min-height: 360px;
+  border-radius: 1rem;
+  border: 1px solid var(--border);
+  padding: 1rem 1.2rem;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(247, 249, 252, 0.92));
+  color: var(--primary);
+  box-shadow: var(--shadow-md);
+  overflow: auto;
+}
+
+.preview-surface h1,
+.preview-surface h2,
+.preview-surface h3,
+.preview-surface h4,
+.preview-surface h5,
+.preview-surface h6 {
+  font-weight: 700;
+  margin: 0.75rem 0 0.4rem;
+}
+
+.preview-surface h1 {
+  font-size: 1.75rem;
+}
+
+.preview-surface h2 {
+  font-size: 1.5rem;
+}
+
+.preview-surface h3 {
+  font-size: 1.35rem;
+}
+
+.preview-surface p {
+  margin: 0.5rem 0;
+  line-height: 1.65;
+}
+
+.preview-surface ul {
+  list-style: disc;
+  padding-left: 1.25rem;
+  margin: 0.5rem 0;
+}
+
+.preview-surface li {
+  margin: 0.35rem 0;
+  line-height: 1.6;
+}
+
+.preview-surface .md-gap {
+  height: 0.65rem;
+}
