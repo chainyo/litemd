@@ -321,6 +321,9 @@ body {
   box-shadow: none;
   overflow: hidden;
   box-sizing: border-box;
+  --editor-pad-top: clamp(1.2rem, 2vw, 1.6rem);
+  --editor-pad-x: clamp(1.05rem, 1.8vw, 1.4rem);
+  --editor-pad-bottom: clamp(1.35rem, 2vw, 1.75rem);
 }
 
 .editor-canvas.is-preview {
@@ -332,7 +335,7 @@ body {
   inset: 0;
   overflow: auto;
   box-sizing: border-box;
-  padding: clamp(1.2rem, 2vw, 1.6rem) clamp(1.05rem, 1.8vw, 1.4rem) clamp(1.35rem, 2vw, 1.75rem);
+  padding: var(--editor-pad-top) var(--editor-pad-x) var(--editor-pad-bottom);
   margin: 0;
 }
 
@@ -340,7 +343,6 @@ body {
   display: block;
   width: 100%;
   height: 100%;
-  padding: 0;
   margin: 0;
   border: none;
   outline: none;
@@ -429,6 +431,7 @@ body {
   border-radius: 1px;
   pointer-events: none;
   z-index: 3;
+  transform: translateY(0);
 }
 
 

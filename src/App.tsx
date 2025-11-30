@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
 	Bold,
 	Eye,
@@ -19,10 +20,20 @@ import {
 	SunMedium,
 	Underline,
 } from "lucide-react";
-import { open } from "@tauri-apps/plugin-dialog";
-import { type MutableRefObject, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import {
+	type MutableRefObject,
+	type ReactNode,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
-import { isMarkdownPath, renderMarkdown, renderPlainText } from "@/lib/markdown.js";
+import {
+	isMarkdownPath,
+	renderMarkdown,
+	renderPlainText,
+} from "@/lib/markdown.js";
 import "./App.css";
 
 type RemoteFile = {
@@ -40,17 +51,20 @@ function App() {
 	const [content, setContent] = useState("");
 	const [filePath, setFilePath] = useState<string | null>(null);
 	const [isMarkdown, setIsMarkdown] = useState(true);
-	const [previewEnabled, setPreviewEnabled] = useState(true);
+	const [previewEnabled, setPreviewEnabled] = useState(false);
 	const [status, setStatus] = useState<UiStatus>("idle");
 	const [message, setMessage] = useState<string | null>(null);
 	const [theme, setTheme] = useState<"light" | "dark">(() => {
 		if (typeof window === "undefined") return "light";
 		const stored = window.localStorage.getItem("theme");
 		if (stored === "dark" || stored === "light") return stored;
-		return window.matchMedia?.("(prefers-color-scheme: dark)")?.matches ? "dark" : "light";
+		return window.matchMedia?.("(prefers-color-scheme: dark)")?.matches
+			? "dark"
+			: "light";
 	});
 	const [modKey, setModKey] = useState<"⌘" | "Ctrl">("Ctrl");
-	const charWidthRef = useRef<number | null>(null);
+	const charWidthRef = useRef<Map<string, number>>(new Map());
+	const textMeasureRef = useRef<CanvasRenderingContext2D | null>(null);
 	const caretPos = useRef<{ top: number; left: number }>({ top: 0, left: 0 });
 
 	useEffect(() => {
@@ -94,8 +108,17 @@ function App() {
 		setContent(file.content);
 		setFilePath(file.path);
 		setIsMarkdown(file.is_markdown ?? isMarkdownPath(file.path));
+		setPreviewEnabled(false);
 		setStatus("ready");
 		setMessage(null);
+	};
+
+	const exitPreviewToEdit = () => {
+		if (!previewVisible) return;
+		setPreviewEnabled(false);
+		requestAnimationFrame(() => {
+			editorRef.current?.focus();
+		});
 	};
 
 	const handleOpenFile = async () => {
@@ -111,9 +134,7 @@ function App() {
 				],
 			});
 
-			const resolvedPath = Array.isArray(selection)
-				? selection[0]
-				: selection;
+			const resolvedPath = Array.isArray(selection) ? selection[0] : selection;
 
 			if (!resolvedPath) {
 				setStatus("ready");
@@ -182,9 +203,7 @@ function App() {
 
 		const replacement = `${"#".repeat(level)} ${trimmed}`.trimEnd();
 		const nextValue =
-			content.slice(0, lineStart) +
-			replacement +
-			content.slice(resolvedEnd);
+			content.slice(0, lineStart) + replacement + content.slice(resolvedEnd);
 
 		setContent(nextValue);
 		requestAnimationFrame(() => {
@@ -206,18 +225,15 @@ function App() {
 		const line = content.slice(lineStart, resolvedEnd);
 		const trimmed = line.trimStart();
 
-		const replacement = trimmed.startsWith("- ")
-			? trimmed
-			: `- ${trimmed}`;
+		const replacement = trimmed.startsWith("- ") ? trimmed : `- ${trimmed}`;
 		const nextValue =
-			content.slice(0, lineStart) +
-			replacement +
-			content.slice(resolvedEnd);
+			content.slice(0, lineStart) + replacement + content.slice(resolvedEnd);
 
 		setContent(nextValue);
 		requestAnimationFrame(() => {
 			target.focus();
-			const targetPos = lineStart + Math.min(replacement.length, cursor - lineStart + 2);
+			const targetPos =
+				lineStart + Math.min(replacement.length, cursor - lineStart + 2);
 			target.selectionStart = targetPos;
 			target.selectionEnd = targetPos;
 		});
@@ -226,6 +242,21 @@ function App() {
 	const handleShortcut = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
 		if (!(event.metaKey || event.ctrlKey)) return;
 		const key = event.key.toLowerCase();
+
+		if (previewVisible) {
+			const editingShortcut =
+				key === "b" ||
+				key === "i" ||
+				key === "u" ||
+				(key === "x" && event.shiftKey) ||
+				(key === "8" && event.shiftKey) ||
+				(event.altKey && ["1", "2", "3", "4", "5", "6"].includes(key));
+			if (editingShortcut) {
+				event.preventDefault();
+				exitPreviewToEdit();
+			}
+			return;
+		}
 
 		if (key === "b") {
 			event.preventDefault();
@@ -255,7 +286,8 @@ function App() {
 
 		const editorScrollable = editor.scrollHeight - editor.clientHeight;
 		const previewScrollable = preview.scrollHeight - preview.clientHeight;
-		const ratio = editorScrollable > 0 ? editor.scrollTop / editorScrollable : 0;
+		const ratio =
+			editorScrollable > 0 ? editor.scrollTop / editorScrollable : 0;
 		preview.scrollTop = ratio * previewScrollable;
 	};
 
@@ -265,26 +297,50 @@ function App() {
 		const canvas = canvasRef.current;
 		if (!editor || !canvas) return;
 
-		const selection = editor.selectionStart ?? 0;
-		const lineStart = content.lastIndexOf("\n", selection - 1) + 1;
-		const lineEnd = content.indexOf("\n", selection);
-		const resolvedEnd = lineEnd === -1 ? content.length : lineEnd;
-		const rawLine = content.slice(lineStart, selection);
-		const leading = content.slice(lineStart, resolvedEnd);
-
-		const visiblePrefix = stripMarkdownTokens(rawLine);
-		const visibleLine = stripMarkdownTokens(leading);
+		const text = editor.value ?? content;
+		const selection = Math.min(editor.selectionStart ?? 0, text.length);
+		const lineStart = text.lastIndexOf("\n", selection - 1) + 1;
+		const lineEnd = text.indexOf("\n", selection);
+		const resolvedEnd = lineEnd === -1 ? text.length : lineEnd;
+		const rawLine = text.slice(lineStart, selection);
+		const leading = text.slice(lineStart, resolvedEnd) ?? "";
 
 		const styles = getComputedStyle(editor);
 		const lineHeight = parseFloat(styles.lineHeight || "20");
-		const chWidth = measureChWidth(styles.fontFamily, styles.fontSize, charWidthRef);
 		const paddingTop = parseFloat(styles.paddingTop || "0");
 		const paddingLeft = parseFloat(styles.paddingLeft || "0");
 		const scrollTop = editor.scrollTop ?? 0;
+		const baseFontSize = parseFloat(styles.fontSize || "16");
+		const headingMatch = /^#{1,6}\s+/.exec(leading);
+		const headingLevel = headingMatch?.[1]?.length ?? null;
+		const fontSizePx =
+			headingLevel !== null ? baseFontSize * 1.05 : baseFontSize;
+		const fontSize = `${fontSizePx}px`;
+		const baseWeight = Number.parseFloat(styles.fontWeight) || 400;
+		const fontWeight = headingLevel !== null ? 700 : baseWeight;
+		const listIndent = /^\s*[-*+]\s+/.test(leading)
+			? baseFontSize * 1.25
+			: 0;
+		const blocklessPrefix = rawLine
+			.replace(/^#{1,6}\s+/, "")
+			.replace(/^\s*[-*+]\s+/, "");
+		const textWidth = measureMarkdownWidth(
+			blocklessPrefix,
+			styles.fontFamily,
+			fontSize,
+			fontWeight,
+			headingLevel,
+			charWidthRef,
+			textMeasureRef,
+		);
 
-		const lineIndex = content.slice(0, lineStart).split("\n").length - 1;
+		const lineIndex = text.slice(0, lineStart).split("\n").length - 1;
 		const top = paddingTop + lineIndex * lineHeight - scrollTop;
-		const left = paddingLeft + visiblePrefix.length * chWidth - (editor.scrollLeft ?? 0);
+		const left =
+			paddingLeft +
+			listIndent +
+			textWidth -
+			(editor.scrollLeft ?? 0);
 
 		caretPos.current = { top, left };
 
@@ -408,10 +464,14 @@ function App() {
 						shortcut={[modKey, "M"]}
 					/>
 					<IconButton
-						icon={theme === "dark" ? <SunMedium size={16} /> : <Moon size={16} />}
+						icon={
+							theme === "dark" ? <SunMedium size={16} /> : <Moon size={16} />
+						}
 						label="Toggle theme"
 						active={theme === "dark"}
-						onClick={() => setTheme((prev) => (prev === "dark" ? "light" : "dark"))}
+						onClick={() =>
+							setTheme((prev) => (prev === "dark" ? "light" : "dark"))
+						}
 						shortcut={[modKey, "T"]}
 					/>
 				</div>
@@ -424,23 +484,70 @@ function App() {
 			)}
 
 			<aside className="format-rail" aria-label="Formatting toolbar">
-				<IconButton icon={<Bold size={16} />} label="Bold" onClick={() => wrapSelection("**", "**")} />
-				<IconButton icon={<Italic size={16} />} label="Italic" onClick={() => wrapSelection("*", "*")} />
-				<IconButton icon={<Underline size={16} />} label="Underline" onClick={() => wrapSelection("++", "++")} />
-				<IconButton icon={<Strikethrough size={16} />} label="Strike" onClick={() => wrapSelection("~~", "~~")} />
+				<IconButton
+					icon={<Bold size={16} />}
+					label="Bold"
+					onClick={() => wrapSelection("**", "**")}
+				/>
+				<IconButton
+					icon={<Italic size={16} />}
+					label="Italic"
+					onClick={() => wrapSelection("*", "*")}
+				/>
+				<IconButton
+					icon={<Underline size={16} />}
+					label="Underline"
+					onClick={() => wrapSelection("++", "++")}
+				/>
+				<IconButton
+					icon={<Strikethrough size={16} />}
+					label="Strike"
+					onClick={() => wrapSelection("~~", "~~")}
+				/>
 				<span className="rail-divider" aria-hidden />
-				<IconButton icon={<Heading1 size={16} />} label="Heading 1" onClick={() => applyHeading(1)} />
-				<IconButton icon={<Heading2 size={16} />} label="Heading 2" onClick={() => applyHeading(2)} />
-				<IconButton icon={<Heading3 size={16} />} label="Heading 3" onClick={() => applyHeading(3)} />
-				<IconButton icon={<Heading4 size={16} />} label="Heading 4" onClick={() => applyHeading(4)} />
-				<IconButton icon={<Heading5 size={16} />} label="Heading 5" onClick={() => applyHeading(5)} />
-				<IconButton icon={<Heading6 size={16} />} label="Heading 6" onClick={() => applyHeading(6)} />
+				<IconButton
+					icon={<Heading1 size={16} />}
+					label="Heading 1"
+					onClick={() => applyHeading(1)}
+				/>
+				<IconButton
+					icon={<Heading2 size={16} />}
+					label="Heading 2"
+					onClick={() => applyHeading(2)}
+				/>
+				<IconButton
+					icon={<Heading3 size={16} />}
+					label="Heading 3"
+					onClick={() => applyHeading(3)}
+				/>
+				<IconButton
+					icon={<Heading4 size={16} />}
+					label="Heading 4"
+					onClick={() => applyHeading(4)}
+				/>
+				<IconButton
+					icon={<Heading5 size={16} />}
+					label="Heading 5"
+					onClick={() => applyHeading(5)}
+				/>
+				<IconButton
+					icon={<Heading6 size={16} />}
+					label="Heading 6"
+					onClick={() => applyHeading(6)}
+				/>
 				<span className="rail-divider" aria-hidden />
-				<IconButton icon={<List size={16} />} label="Bullet list" onClick={applyBullet} />
+				<IconButton
+					icon={<List size={16} />}
+					label="Bullet list"
+					onClick={applyBullet}
+				/>
 			</aside>
 
 			<section className="workspace" aria-label="Editor surface">
-				<div className={`editor-canvas ${previewVisible ? "is-preview" : ""}`} ref={canvasRef}>
+				<div
+					className={`editor-canvas ${previewVisible ? "is-preview" : ""}`}
+					ref={canvasRef}
+				>
 					{previewVisible && (
 						<div
 							ref={previewRef}
@@ -448,22 +555,26 @@ function App() {
 							dangerouslySetInnerHTML={{ __html: previewHtml }}
 						/>
 					)}
-					{previewVisible && (
-						<span
-							className="caret-overlay"
-							style={{ top: caretPos.current.top, left: caretPos.current.left }}
-						/>
-					)}
 					<textarea
 						ref={editorRef}
 						value={content}
+						readOnly={previewVisible}
+						aria-readonly={previewVisible}
+						onPointerDown={exitPreviewToEdit}
+						onFocus={exitPreviewToEdit}
 						onChange={(event) => {
 							setContent(event.target.value);
 							requestAnimationFrame(() => updateCaretOverlay());
 						}}
 						onKeyDown={handleShortcut}
 						onKeyUp={updateCaretOverlay}
-						onClick={updateCaretOverlay}
+						onClick={() => {
+							if (previewVisible) {
+								exitPreviewToEdit();
+								return;
+							}
+							updateCaretOverlay();
+						}}
 						onSelect={updateCaretOverlay}
 						onScroll={updateCaretOverlay}
 						className={`editor-input editor-layer ${previewVisible ? "preview-active" : ""}`}
@@ -510,8 +621,14 @@ function IconButton({
 	);
 }
 
-function measureChWidth(fontFamily: string, fontSize: string, cache: MutableRefObject<number | null>) {
-	if (cache.current !== null) return cache.current;
+function measureChWidth(
+	fontFamily: string,
+	fontSize: string,
+	cache: MutableRefObject<Map<string, number>>,
+) {
+	const key = `${fontFamily}|${fontSize}`;
+	const existing = cache.current.get(key);
+	if (existing) return existing;
 	const span = document.createElement("span");
 	span.textContent = "0";
 	span.style.position = "absolute";
@@ -522,16 +639,97 @@ function measureChWidth(fontFamily: string, fontSize: string, cache: MutableRefO
 	document.body.append(span);
 	const width = span.getBoundingClientRect().width || 8;
 	span.remove();
-	cache.current = width;
+	cache.current.set(key, width);
 	return width;
 }
 
-function stripMarkdownTokens(line: string) {
-	let next = line;
-	next = next.replace(/^#{1,6}\s+/, "");
-	next = next.replace(/^\s*[-*+]\s+/, "");
-	next = next.replace(/(\*\*|__|~~|\+\+|\*|_)/g, "");
-	return next;
+function measureTextWidth(
+	text: string,
+	fontFamily: string,
+	fontSize: string,
+	fontWeight: string,
+	charCache: MutableRefObject<Map<string, number>>,
+	ctxRef: MutableRefObject<CanvasRenderingContext2D | null>,
+) {
+	const fallback =
+		(text?.length ?? 0) * measureChWidth(fontFamily, fontSize, charCache);
+
+	try {
+		if (!ctxRef.current) {
+			const canvas = document.createElement("canvas");
+			ctxRef.current = canvas.getContext("2d");
+		}
+
+		const ctx = ctxRef.current;
+		if (!ctx) return fallback;
+
+		ctx.font = `${fontWeight} ${fontSize} ${fontFamily || "monospace"}`;
+		const measured = ctx.measureText(text ?? "");
+		return measured?.width || fallback;
+	} catch {
+		return fallback;
+	}
+}
+
+function measureMarkdownWidth(
+	text: string,
+	fontFamily: string,
+	fontSize: string,
+	baseWeight: number,
+	headingLevel: number | null,
+	charCache: MutableRefObject<Map<string, number>>,
+	ctxRef: MutableRefObject<CanvasRenderingContext2D | null>,
+) {
+	if (!text) return 0;
+
+	const consumeMarker = (marker: string, at: number) =>
+		text.startsWith(marker, at) ? marker.length : 0;
+
+	let width = 0;
+	let cursor = 0;
+	let bold = false;
+
+	while (cursor < text.length) {
+		const markerLen =
+			consumeMarker("**", cursor) ||
+			consumeMarker("__", cursor) ||
+			consumeMarker("++", cursor) ||
+			consumeMarker("~~", cursor);
+
+		if (markerLen) {
+			if (markerLen === 2 && (text[cursor] === "*" || text[cursor] === "_")) {
+				bold = !bold;
+			}
+			cursor += markerLen;
+			continue;
+		}
+
+		const start = cursor;
+		while (cursor < text.length) {
+			const ahead =
+				consumeMarker("**", cursor) ||
+				consumeMarker("__", cursor) ||
+				consumeMarker("++", cursor) ||
+				consumeMarker("~~", cursor);
+			if (ahead) break;
+			cursor += 1;
+		}
+
+		const segment = text.slice(start, cursor);
+		if (segment.length) {
+			const weight = headingLevel !== null || bold ? 700 : baseWeight;
+			width += measureTextWidth(
+				segment,
+				fontFamily,
+				fontSize,
+				String(weight),
+				charCache,
+				ctxRef,
+			);
+		}
+	}
+
+	return width;
 }
 
 function formatError(error: unknown, fallback: string) {
