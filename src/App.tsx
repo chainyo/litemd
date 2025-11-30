@@ -3,6 +3,7 @@ import {
 	Bold,
 	Eye,
 	EyeOff,
+	FileText,
 	FolderOpen,
 	Heading1,
 	Heading2,
@@ -12,13 +13,15 @@ import {
 	Heading6,
 	Italic,
 	List,
-	Strikethrough,
-	Underline,
+	Moon,
 	Save,
-	Wand2,
+	Strikethrough,
+	SunMedium,
+	Underline,
 } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { type MutableRefObject, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import { isMarkdownPath, renderMarkdown, renderPlainText } from "@/lib/markdown.js";
 import "./App.css";
 
@@ -32,20 +35,28 @@ type UiStatus = "idle" | "loading" | "saving" | "ready" | "error";
 
 function App() {
 	const editorRef = useRef<HTMLTextAreaElement>(null);
+	const previewRef = useRef<HTMLDivElement>(null);
+	const canvasRef = useRef<HTMLDivElement>(null);
 	const [content, setContent] = useState("");
 	const [filePath, setFilePath] = useState<string | null>(null);
 	const [isMarkdown, setIsMarkdown] = useState(true);
 	const [previewEnabled, setPreviewEnabled] = useState(true);
 	const [status, setStatus] = useState<UiStatus>("idle");
 	const [message, setMessage] = useState<string | null>(null);
-	const [startupMs, setStartupMs] = useState<number | null>(null);
-	const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
+	const [theme, setTheme] = useState<"light" | "dark">(() => {
+		if (typeof window === "undefined") return "light";
+		const stored = window.localStorage.getItem("theme");
+		if (stored === "dark" || stored === "light") return stored;
+		return window.matchMedia?.("(prefers-color-scheme: dark)")?.matches ? "dark" : "light";
+	});
+	const [modKey, setModKey] = useState<"⌘" | "Ctrl">("Ctrl");
+	const charWidthRef = useRef<number | null>(null);
+	const caretPos = useRef<{ top: number; left: number }>({ top: 0, left: 0 });
 
 	useEffect(() => {
 		const bootstrap = async () => {
 			try {
-				const ms = await invoke<number>("mark_frontend_ready");
-				setStartupMs(ms);
+				await invoke<number>("mark_frontend_ready");
 			} catch {
 				// ignore instrumentation errors in dev
 			}
@@ -67,12 +78,17 @@ function App() {
 	}, []);
 
 	const previewHtml = useMemo(
-		() =>
-			isMarkdown && previewEnabled
-				? renderMarkdown(content)
-				: renderPlainText(content),
-		[content, isMarkdown, previewEnabled],
+		() => (isMarkdown ? renderMarkdown(content) : renderPlainText(content)),
+		[content, isMarkdown],
 	);
+	const previewVisible = isMarkdown && previewEnabled;
+	const showError = status === "error" && message;
+
+	useEffect(() => {
+		if (typeof navigator !== "undefined") {
+			setModKey(/mac/i.test(navigator.userAgent) ? "⌘" : "Ctrl");
+		}
+	}, []);
 
 	const applyFile = (file: RemoteFile) => {
 		setContent(file.content);
@@ -119,8 +135,7 @@ function App() {
 		try {
 			await invoke("save_file", { contents: content });
 			setStatus("ready");
-			setMessage("Saved");
-			setLastSavedAt(new Date().toLocaleTimeString());
+			setMessage(null);
 		} catch (error) {
 			setStatus("error");
 			setMessage(formatError(error, "Unable to save file"));
@@ -233,157 +248,290 @@ function App() {
 		}
 	};
 
-	const statusTone =
-		status === "error"
-			? "text-red-600 border-red-200 bg-red-50"
-			: status === "saving" || status === "loading"
-				? "text-amber-700 border-amber-200 bg-amber-50"
-				: "text-emerald-700 border-emerald-200 bg-emerald-50";
+	const syncPreviewScroll = () => {
+		const editor = editorRef.current;
+		const preview = previewRef.current;
+		if (!editor || !preview) return;
+
+		const editorScrollable = editor.scrollHeight - editor.clientHeight;
+		const previewScrollable = preview.scrollHeight - preview.clientHeight;
+		const ratio = editorScrollable > 0 ? editor.scrollTop / editorScrollable : 0;
+		preview.scrollTop = ratio * previewScrollable;
+	};
+
+	const updateCaretOverlay = () => {
+		if (!previewVisible) return;
+		const editor = editorRef.current;
+		const canvas = canvasRef.current;
+		if (!editor || !canvas) return;
+
+		const selection = editor.selectionStart ?? 0;
+		const lineStart = content.lastIndexOf("\n", selection - 1) + 1;
+		const lineEnd = content.indexOf("\n", selection);
+		const resolvedEnd = lineEnd === -1 ? content.length : lineEnd;
+		const rawLine = content.slice(lineStart, selection);
+		const leading = content.slice(lineStart, resolvedEnd);
+
+		const visiblePrefix = stripMarkdownTokens(rawLine);
+		const visibleLine = stripMarkdownTokens(leading);
+
+		const styles = getComputedStyle(editor);
+		const lineHeight = parseFloat(styles.lineHeight || "20");
+		const chWidth = measureChWidth(styles.fontFamily, styles.fontSize, charWidthRef);
+		const paddingTop = parseFloat(styles.paddingTop || "0");
+		const paddingLeft = parseFloat(styles.paddingLeft || "0");
+		const scrollTop = editor.scrollTop ?? 0;
+
+		const lineIndex = content.slice(0, lineStart).split("\n").length - 1;
+		const top = paddingTop + lineIndex * lineHeight - scrollTop;
+		const left = paddingLeft + visiblePrefix.length * chWidth - (editor.scrollLeft ?? 0);
+
+		caretPos.current = { top, left };
+
+		// Keep overlay sized to line height
+		const caretEl = canvas.querySelector<HTMLElement>(".caret-overlay");
+		if (caretEl) {
+			caretEl.style.height = `${lineHeight}px`;
+		}
+
+		// Ensure preview scroll follows caret line roughly
+		if (previewVisible && previewRef.current) {
+			const preview = previewRef.current;
+			const caretBottom = top + lineHeight;
+			if (caretBottom > preview.clientHeight + preview.scrollTop) {
+				preview.scrollTop = caretBottom - preview.clientHeight;
+			} else if (top < preview.scrollTop) {
+				preview.scrollTop = top;
+			}
+		}
+	};
+
+	useEffect(() => {
+		const root = document.documentElement;
+		if (theme === "dark") {
+			root.classList.add("dark");
+		} else {
+			root.classList.remove("dark");
+		}
+
+		if (typeof window !== "undefined") {
+			try {
+				window.localStorage.setItem("theme", theme);
+			} catch {
+				// ignore storage write failures
+			}
+		}
+	}, [theme]);
+
+	useEffect(() => {
+		if (typeof navigator !== "undefined") {
+			setModKey(/mac/i.test(navigator.userAgent) ? "⌘" : "Ctrl");
+		}
+	}, []);
+
+	useEffect(() => {
+		if (!previewVisible) return;
+		const editor = editorRef.current;
+		if (!editor) return;
+
+		const syncScroll = () => {
+			syncPreviewScroll();
+		};
+		editor.addEventListener("scroll", syncScroll);
+		return () => {
+			editor.removeEventListener("scroll", syncScroll);
+		};
+	}, [previewVisible]);
+
+	useEffect(() => {
+		if (!previewVisible) return;
+		syncPreviewScroll();
+	}, [previewHtml, previewVisible]);
+
+	useEffect(() => {
+		if (!previewVisible) return;
+		updateCaretOverlay();
+	});
+
+	useEffect(() => {
+		const handler = (event: KeyboardEvent) => {
+			const isMod = event.metaKey || event.ctrlKey;
+			if (!isMod) return;
+			const key = event.key.toLowerCase();
+			if (["s", "o", "m", "t"].includes(key)) {
+				event.preventDefault();
+				if (key === "s") {
+					void handleSave();
+				} else if (key === "o") {
+					void handleOpenFile();
+				} else if (key === "m") {
+					setPreviewEnabled((prev) => !prev);
+				} else if (key === "t") {
+					setTheme((prev) => (prev === "dark" ? "light" : "dark"));
+				}
+			}
+		};
+
+		window.addEventListener("keydown", handler);
+		return () => window.removeEventListener("keydown", handler);
+	}, []);
 
 	const fileLabel = filePath ? filePath : "Untitled";
 
 	return (
-		<main className="min-h-screen bg-app text-foreground">
-			<div className="mx-auto flex max-w-6xl flex-col gap-6 p-6 md:p-10">
-				<header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-					<div className="space-y-1">
-						<div className="inline-flex items-center gap-2 rounded-full bg-white/70 px-3 py-1 text-sm font-semibold text-primary shadow-sm ring-1 ring-black/5 backdrop-blur">
-							<Wand2 size={16} />
-							LiteMD
-						</div>
-						<h1 className="text-3xl font-semibold tracking-tight text-primary">
-							Fast, offline-first Markdown.
-						</h1>
-						<p className="text-sm text-muted-foreground">
-							Open any text file, edit with shortcuts, and preview safely.
-						</p>
+		<main className="app-shell">
+			<header className="topbar">
+				<div className="topbar-left">
+					<div className="file-context" title={fileLabel}>
+						<FileText size={16} />
+						<span className="file-path">{fileLabel}</span>
 					</div>
-					<div className="flex items-center gap-3">
-						<button
-							type="button"
-							onClick={handleOpenFile}
-							className="action-btn"
-							aria-label="Open file"
-						>
-							<FolderOpen size={18} />
-							Open
-						</button>
-						<button
-							type="button"
-							onClick={handleSave}
-							className="action-btn primary"
-							aria-label="Save file"
-						>
-							<Save size={18} />
-							Save
-						</button>
-					</div>
-				</header>
+				</div>
+				<div className="topbar-actions">
+					<IconButton
+						icon={<FolderOpen size={16} />}
+						label="Open file"
+						onClick={handleOpenFile}
+						shortcut={[modKey, "O"]}
+					/>
+					<IconButton
+						icon={<Save size={16} />}
+						label="Save file"
+						onClick={handleSave}
+						shortcut={[modKey, "S"]}
+					/>
+					<IconButton
+						icon={previewEnabled ? <Eye size={16} /> : <EyeOff size={16} />}
+						label={previewEnabled ? "Preview on" : "Preview off"}
+						active={previewEnabled}
+						onClick={() => setPreviewEnabled((prev) => !prev)}
+						shortcut={[modKey, "M"]}
+					/>
+					<IconButton
+						icon={theme === "dark" ? <SunMedium size={16} /> : <Moon size={16} />}
+						label="Toggle theme"
+						active={theme === "dark"}
+						onClick={() => setTheme((prev) => (prev === "dark" ? "light" : "dark"))}
+						shortcut={[modKey, "T"]}
+					/>
+				</div>
+			</header>
 
-				<section className="space-y-3 rounded-2xl border border-border/60 bg-white/75 shadow-xl shadow-primary/5 backdrop-blur">
-					<div className="flex flex-col gap-2 border-b border-border/70 px-5 py-4 md:flex-row md:items-center md:justify-between">
-						<div className="space-y-1">
-							<p className="text-xs uppercase tracking-wide text-muted-foreground">
-								Current file
-							</p>
-							<p className="text-sm font-medium text-primary">{fileLabel}</p>
-						</div>
-						<div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-							{startupMs !== null && (
-								<span className="rounded-full bg-muted px-3 py-1 text-primary">
-									Start: {startupMs}ms
-								</span>
-							)}
-							{lastSavedAt && (
-								<span className="rounded-full bg-muted px-3 py-1 text-primary">
-									Saved at {lastSavedAt}
-								</span>
-							)}
-							<span className={`rounded-full border px-3 py-1 ${statusTone}`}>
-								{message ?? status}
-							</span>
-							<button
-								type="button"
-								onClick={() => setPreviewEnabled((prev) => !prev)}
-								className="toggle-btn"
-								aria-label="Toggle preview"
-							>
-								{previewEnabled ? <Eye size={16} /> : <EyeOff size={16} />}
-								{previewEnabled ? "Preview on" : "Preview off"}
-							</button>
-						</div>
-					</div>
+			{showError && (
+				<div className="inline-alert" role="status">
+					{message}
+				</div>
+			)}
 
-					<div className="flex flex-wrap items-center gap-2 border-b border-border/70 px-5 py-3">
-						<ToolbarButton label="Bold" icon={<Bold size={16} />} onClick={() => wrapSelection("**", "**")} />
-						<ToolbarButton label="Italic" icon={<Italic size={16} />} onClick={() => wrapSelection("*", "*")} />
-						<ToolbarButton label="Underline" icon={<Underline size={16} />} onClick={() => wrapSelection("++", "++")} />
-						<ToolbarButton label="Strike" icon={<Strikethrough size={16} />} onClick={() => wrapSelection("~~", "~~")} />
-						<span className="mx-1 h-5 w-px bg-border" aria-hidden />
-						<ToolbarButton label="H1" icon={<Heading1 size={16} />} onClick={() => applyHeading(1)} />
-						<ToolbarButton label="H2" icon={<Heading2 size={16} />} onClick={() => applyHeading(2)} />
-						<ToolbarButton label="H3" icon={<Heading3 size={16} />} onClick={() => applyHeading(3)} />
-						<ToolbarButton label="H4" icon={<Heading4 size={16} />} onClick={() => applyHeading(4)} />
-						<ToolbarButton label="H5" icon={<Heading5 size={16} />} onClick={() => applyHeading(5)} />
-						<ToolbarButton label="H6" icon={<Heading6 size={16} />} onClick={() => applyHeading(6)} />
-						<span className="mx-1 h-5 w-px bg-border" aria-hidden />
-						<ToolbarButton label="Bullet" icon={<List size={16} />} onClick={applyBullet} />
-					</div>
+			<aside className="format-rail" aria-label="Formatting toolbar">
+				<IconButton icon={<Bold size={16} />} label="Bold" onClick={() => wrapSelection("**", "**")} />
+				<IconButton icon={<Italic size={16} />} label="Italic" onClick={() => wrapSelection("*", "*")} />
+				<IconButton icon={<Underline size={16} />} label="Underline" onClick={() => wrapSelection("++", "++")} />
+				<IconButton icon={<Strikethrough size={16} />} label="Strike" onClick={() => wrapSelection("~~", "~~")} />
+				<span className="rail-divider" aria-hidden />
+				<IconButton icon={<Heading1 size={16} />} label="Heading 1" onClick={() => applyHeading(1)} />
+				<IconButton icon={<Heading2 size={16} />} label="Heading 2" onClick={() => applyHeading(2)} />
+				<IconButton icon={<Heading3 size={16} />} label="Heading 3" onClick={() => applyHeading(3)} />
+				<IconButton icon={<Heading4 size={16} />} label="Heading 4" onClick={() => applyHeading(4)} />
+				<IconButton icon={<Heading5 size={16} />} label="Heading 5" onClick={() => applyHeading(5)} />
+				<IconButton icon={<Heading6 size={16} />} label="Heading 6" onClick={() => applyHeading(6)} />
+				<span className="rail-divider" aria-hidden />
+				<IconButton icon={<List size={16} />} label="Bullet list" onClick={applyBullet} />
+			</aside>
 
-					<div className="grid gap-4 px-5 pb-5 pt-2 md:grid-cols-2">
-						<div className="flex flex-col gap-3">
-							<label className="flex items-center justify-between text-xs uppercase tracking-wide text-muted-foreground">
-								Editor
-								<span className="rounded-full bg-muted px-2 py-1 text-[10px] text-primary">
-									Shortcuts: Cmd/Ctrl + B / I / U / Shift+X / Option+1-6
-								</span>
-							</label>
-							<textarea
-								ref={editorRef}
-								value={content}
-								onChange={(event) => setContent(event.target.value)}
-								onKeyDown={handleShortcut}
-								className="editor-surface"
-								placeholder="Start typing or open a file..."
-							/>
-						</div>
-
-						<div className="flex flex-col gap-3">
-							<div className="flex items-center justify-between text-xs uppercase tracking-wide text-muted-foreground">
-								<span>{isMarkdown && previewEnabled ? "Preview" : "Plain text"}</span>
-								<span className="rounded-full bg-muted px-2 py-1 text-[10px] text-primary">
-									Updates instantly
-								</span>
-							</div>
-							<div className="preview-surface" dangerouslySetInnerHTML={{ __html: previewHtml }} />
-						</div>
-					</div>
-				</section>
-			</div>
+			<section className="workspace" aria-label="Editor surface">
+				<div className={`editor-canvas ${previewVisible ? "is-preview" : ""}`} ref={canvasRef}>
+					{previewVisible && (
+						<div
+							ref={previewRef}
+							className="preview-layer editor-layer"
+							dangerouslySetInnerHTML={{ __html: previewHtml }}
+						/>
+					)}
+					{previewVisible && (
+						<span
+							className="caret-overlay"
+							style={{ top: caretPos.current.top, left: caretPos.current.left }}
+						/>
+					)}
+					<textarea
+						ref={editorRef}
+						value={content}
+						onChange={(event) => {
+							setContent(event.target.value);
+							requestAnimationFrame(() => updateCaretOverlay());
+						}}
+						onKeyDown={handleShortcut}
+						onKeyUp={updateCaretOverlay}
+						onClick={updateCaretOverlay}
+						onSelect={updateCaretOverlay}
+						onScroll={updateCaretOverlay}
+						className={`editor-input editor-layer ${previewVisible ? "preview-active" : ""}`}
+						placeholder="Start typing or open a file..."
+					/>
+				</div>
+			</section>
 		</main>
 	);
 }
 
-function ToolbarButton({
+function IconButton({
 	icon,
 	label,
 	onClick,
+	active = false,
+	shortcut,
+	noActiveBorder = false,
 }: {
 	icon: ReactNode;
 	label: string;
 	onClick: () => void;
+	active?: boolean;
+	shortcut?: string[];
+	noActiveBorder?: boolean;
 }) {
 	return (
 		<button
 			type="button"
 			onClick={onClick}
-			className="toolbar-btn"
+			className={`icon-btn ${active ? "active" : ""} ${noActiveBorder ? "no-active-border" : ""}`}
 			aria-label={label}
+			title={label}
 		>
 			{icon}
-			<span className="hidden sm:inline">{label}</span>
+			{shortcut?.length ? (
+				<KbdGroup className="shortcut">
+					{shortcut.map((key) => (
+						<Kbd key={key}>{key}</Kbd>
+					))}
+				</KbdGroup>
+			) : null}
 		</button>
 	);
+}
+
+function measureChWidth(fontFamily: string, fontSize: string, cache: MutableRefObject<number | null>) {
+	if (cache.current !== null) return cache.current;
+	const span = document.createElement("span");
+	span.textContent = "0";
+	span.style.position = "absolute";
+	span.style.visibility = "hidden";
+	span.style.fontFamily = fontFamily;
+	span.style.fontSize = fontSize;
+	span.style.whiteSpace = "pre";
+	document.body.append(span);
+	const width = span.getBoundingClientRect().width || 8;
+	span.remove();
+	cache.current = width;
+	return width;
+}
+
+function stripMarkdownTokens(line: string) {
+	let next = line;
+	next = next.replace(/^#{1,6}\s+/, "");
+	next = next.replace(/^\s*[-*+]\s+/, "");
+	next = next.replace(/(\*\*|__|~~|\+\+|\*|_)/g, "");
+	return next;
 }
 
 function formatError(error: unknown, fallback: string) {
