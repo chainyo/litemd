@@ -29,11 +29,13 @@ import {
 	useState,
 } from "react";
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
+import { Toaster } from "@/components/ui/sonner";
 import {
 	isMarkdownPath,
 	renderMarkdown,
 	renderPlainText,
 } from "@/lib/markdown.js";
+import { toast } from "sonner";
 import "./App.css";
 
 type RemoteFile = {
@@ -53,7 +55,6 @@ function App() {
 	const [isMarkdown, setIsMarkdown] = useState(true);
 	const [previewEnabled, setPreviewEnabled] = useState(false);
 	const [status, setStatus] = useState<UiStatus>("idle");
-	const [message, setMessage] = useState<string | null>(null);
 	const [theme, setTheme] = useState<"light" | "dark">(() => {
 		if (typeof window === "undefined") return "light";
 		const stored = window.localStorage.getItem("theme");
@@ -66,6 +67,7 @@ function App() {
 	const charWidthRef = useRef<Map<string, number>>(new Map());
 	const textMeasureRef = useRef<CanvasRenderingContext2D | null>(null);
 	const caretPos = useRef<{ top: number; left: number }>({ top: 0, left: 0 });
+	const altKeyLabel = modKey === "⌘" ? "Option" : "Alt";
 
 	useEffect(() => {
 		const bootstrap = async () => {
@@ -82,7 +84,7 @@ function App() {
 					return;
 				}
 			} catch (error) {
-				setMessage(formatError(error, "Unable to load initial file"));
+				toast.error(formatError(error, "Unable to load initial file"));
 			}
 
 			setStatus("ready");
@@ -96,7 +98,7 @@ function App() {
 		[content, isMarkdown],
 	);
 	const previewVisible = isMarkdown && previewEnabled;
-	const showError = status === "error" && message;
+	const isBusy = status === "loading" || status === "saving";
 
 	useEffect(() => {
 		if (typeof navigator !== "undefined") {
@@ -110,7 +112,6 @@ function App() {
 		setIsMarkdown(file.is_markdown ?? isMarkdownPath(file.path));
 		setPreviewEnabled(false);
 		setStatus("ready");
-		setMessage(null);
 	};
 
 	const exitPreviewToEdit = () => {
@@ -147,7 +148,7 @@ function App() {
 			applyFile(file);
 		} catch (error) {
 			setStatus("error");
-			setMessage(formatError(error, "Unable to open file"));
+			toast.error(formatError(error, "Unable to open file"));
 		}
 	};
 
@@ -156,10 +157,9 @@ function App() {
 		try {
 			await invoke("save_file", { contents: content });
 			setStatus("ready");
-			setMessage(null);
 		} catch (error) {
 			setStatus("error");
-			setMessage(formatError(error, "Unable to save file"));
+			toast.error(formatError(error, "Unable to save file"));
 		}
 	};
 
@@ -260,10 +260,10 @@ function App() {
 
 		if (key === "b") {
 			event.preventDefault();
-			wrapSelection("**", "**");
+			wrapSelection("__", "__");
 		} else if (key === "i") {
 			event.preventDefault();
-			wrapSelection("*", "*");
+			wrapSelection("_", "_");
 		} else if (key === "u") {
 			event.preventDefault();
 			wrapSelection("++", "++");
@@ -435,154 +435,166 @@ function App() {
 	const fileLabel = filePath ? filePath : "Untitled";
 
 	return (
-		<main className="app-shell">
-			<header className="topbar">
-				<div className="topbar-left">
-					<div className="file-context" title={fileLabel}>
-						<FileText size={16} />
-						<span className="file-path">{fileLabel}</span>
+		<>
+			<main
+				className="app-shell"
+				data-status={status}
+				aria-busy={isBusy}
+			>
+				<header className="topbar">
+					<div className="topbar-left">
+						<div className="file-context" title={fileLabel}>
+							<FileText size={16} />
+							<span className="file-path">{fileLabel}</span>
+						</div>
 					</div>
-				</div>
-				<div className="topbar-actions">
-					<IconButton
-						icon={<FolderOpen size={16} />}
-						label="Open file"
-						onClick={handleOpenFile}
-						shortcut={[modKey, "O"]}
-					/>
-					<IconButton
-						icon={<Save size={16} />}
-						label="Save file"
-						onClick={handleSave}
-						shortcut={[modKey, "S"]}
-					/>
-					<IconButton
-						icon={previewEnabled ? <Eye size={16} /> : <EyeOff size={16} />}
-						label={previewEnabled ? "Preview on" : "Preview off"}
-						active={previewEnabled}
-						onClick={() => setPreviewEnabled((prev) => !prev)}
-						shortcut={[modKey, "M"]}
-					/>
-					<IconButton
-						icon={
-							theme === "dark" ? <SunMedium size={16} /> : <Moon size={16} />
-						}
-						label="Toggle theme"
-						active={theme === "dark"}
-						onClick={() =>
-							setTheme((prev) => (prev === "dark" ? "light" : "dark"))
-						}
-						shortcut={[modKey, "T"]}
-					/>
-				</div>
-			</header>
-
-			{showError && (
-				<div className="inline-alert" role="status">
-					{message}
-				</div>
-			)}
-
-			<aside className="format-rail" aria-label="Formatting toolbar">
-				<IconButton
-					icon={<Bold size={16} />}
-					label="Bold"
-					onClick={() => wrapSelection("**", "**")}
-				/>
-				<IconButton
-					icon={<Italic size={16} />}
-					label="Italic"
-					onClick={() => wrapSelection("*", "*")}
-				/>
-				<IconButton
-					icon={<Underline size={16} />}
-					label="Underline"
-					onClick={() => wrapSelection("++", "++")}
-				/>
-				<IconButton
-					icon={<Strikethrough size={16} />}
-					label="Strike"
-					onClick={() => wrapSelection("~~", "~~")}
-				/>
-				<span className="rail-divider" aria-hidden />
-				<IconButton
-					icon={<Heading1 size={16} />}
-					label="Heading 1"
-					onClick={() => applyHeading(1)}
-				/>
-				<IconButton
-					icon={<Heading2 size={16} />}
-					label="Heading 2"
-					onClick={() => applyHeading(2)}
-				/>
-				<IconButton
-					icon={<Heading3 size={16} />}
-					label="Heading 3"
-					onClick={() => applyHeading(3)}
-				/>
-				<IconButton
-					icon={<Heading4 size={16} />}
-					label="Heading 4"
-					onClick={() => applyHeading(4)}
-				/>
-				<IconButton
-					icon={<Heading5 size={16} />}
-					label="Heading 5"
-					onClick={() => applyHeading(5)}
-				/>
-				<IconButton
-					icon={<Heading6 size={16} />}
-					label="Heading 6"
-					onClick={() => applyHeading(6)}
-				/>
-				<span className="rail-divider" aria-hidden />
-				<IconButton
-					icon={<List size={16} />}
-					label="Bullet list"
-					onClick={applyBullet}
-				/>
-			</aside>
-
-			<section className="workspace" aria-label="Editor surface">
-				<div
-					className={`editor-canvas ${previewVisible ? "is-preview" : ""}`}
-					ref={canvasRef}
-				>
-					{previewVisible && (
-						<div
-							ref={previewRef}
-							className="preview-layer editor-layer"
-							dangerouslySetInnerHTML={{ __html: previewHtml }}
+					<div className="topbar-actions gap-1">
+						<IconButton
+							icon={<FolderOpen size={16} />}
+							label="Open file"
+							onClick={handleOpenFile}
+							shortcut={[modKey, "O"]}
 						/>
-					)}
-					<textarea
-						ref={editorRef}
-						value={content}
-						readOnly={previewVisible}
-						aria-readonly={previewVisible}
-						onPointerDown={exitPreviewToEdit}
-						onFocus={exitPreviewToEdit}
-						onChange={(event) => {
-							setContent(event.target.value);
-							requestAnimationFrame(() => updateCaretOverlay());
-						}}
-						onKeyDown={handleShortcut}
-						onKeyUp={updateCaretOverlay}
-						onClick={() => {
-							if (previewVisible) {
-								exitPreviewToEdit();
-								return;
+						<IconButton
+							icon={<Save size={16} />}
+							label="Save file"
+							onClick={handleSave}
+							shortcut={[modKey, "S"]}
+						/>
+						<IconButton
+							icon={previewEnabled ? <Eye size={16} /> : <EyeOff size={16} />}
+							label={previewEnabled ? "Preview on" : "Preview off"}
+							active={previewEnabled}
+							onClick={() => setPreviewEnabled((prev) => !prev)}
+							shortcut={[modKey, "M"]}
+						/>
+						<IconButton
+							icon={
+								theme === "dark" ? <SunMedium size={16} /> : <Moon size={16} />
 							}
-							updateCaretOverlay();
-						}}
-						onSelect={updateCaretOverlay}
-						onScroll={updateCaretOverlay}
-						className={`editor-input editor-layer ${previewVisible ? "preview-active" : ""}`}
-						placeholder="Start typing or open a file..."
+							label="Toggle theme"
+							active={theme === "dark"}
+							onClick={() =>
+								setTheme((prev) => (prev === "dark" ? "light" : "dark"))
+							}
+							shortcut={[modKey, "T"]}
+						/>
+					</div>
+				</header>
+
+				<aside className="format-rail" aria-label="Formatting toolbar">
+					<IconButton
+						icon={<Bold size={16} />}
+						label="Bold"
+						onClick={() => wrapSelection("__", "__")}
+						shortcut={[modKey, "B"]}
 					/>
-				</div>
-			</section>
-		</main>
+					<IconButton
+						icon={<Italic size={16} />}
+						label="Italic"
+						onClick={() => wrapSelection("_", "_")}
+						shortcut={[modKey, "I"]}
+					/>
+					<IconButton
+						icon={<Underline size={16} />}
+						label="Underline"
+						onClick={() => wrapSelection("++", "++")}
+						shortcut={[modKey, "U"]}
+					/>
+					<IconButton
+						icon={<Strikethrough size={16} />}
+						label="Strike"
+						onClick={() => wrapSelection("~~", "~~")}
+						shortcut={[modKey, "Shift", "X"]}
+					/>
+					<span className="rail-divider" aria-hidden />
+					<IconButton
+						icon={<Heading1 size={16} />}
+						label="Heading 1"
+						onClick={() => applyHeading(1)}
+						shortcut={[modKey, altKeyLabel, "1"]}
+					/>
+					<IconButton
+						icon={<Heading2 size={16} />}
+						label="Heading 2"
+						onClick={() => applyHeading(2)}
+						shortcut={[modKey, altKeyLabel, "2"]}
+					/>
+					<IconButton
+						icon={<Heading3 size={16} />}
+						label="Heading 3"
+						onClick={() => applyHeading(3)}
+						shortcut={[modKey, altKeyLabel, "3"]}
+					/>
+					<IconButton
+						icon={<Heading4 size={16} />}
+						label="Heading 4"
+						onClick={() => applyHeading(4)}
+						shortcut={[modKey, altKeyLabel, "4"]}
+					/>
+					<IconButton
+						icon={<Heading5 size={16} />}
+						label="Heading 5"
+						onClick={() => applyHeading(5)}
+						shortcut={[modKey, altKeyLabel, "5"]}
+					/>
+					<IconButton
+						icon={<Heading6 size={16} />}
+						label="Heading 6"
+						onClick={() => applyHeading(6)}
+						shortcut={[modKey, altKeyLabel, "6"]}
+					/>
+					<span className="rail-divider" aria-hidden />
+					<IconButton
+						icon={<List size={16} />}
+						label="Bullet list"
+						onClick={applyBullet}
+						shortcut={[modKey, "Shift", "8"]}
+					/>
+				</aside>
+
+				<section className="workspace" aria-label="Editor surface">
+					<div
+						className={`editor-canvas ${previewVisible ? "is-preview" : ""}`}
+						ref={canvasRef}
+					>
+						{previewVisible && (
+							<div
+								ref={previewRef}
+								className="preview-layer editor-layer"
+								dangerouslySetInnerHTML={{ __html: previewHtml }}
+							/>
+						)}
+						<textarea
+							ref={editorRef}
+							value={content}
+							readOnly={previewVisible}
+							aria-readonly={previewVisible}
+							onPointerDown={exitPreviewToEdit}
+							onFocus={exitPreviewToEdit}
+							onChange={(event) => {
+								setContent(event.target.value);
+								requestAnimationFrame(() => updateCaretOverlay());
+							}}
+							onKeyDown={handleShortcut}
+							onKeyUp={updateCaretOverlay}
+							onClick={() => {
+								if (previewVisible) {
+									exitPreviewToEdit();
+									return;
+								}
+								updateCaretOverlay();
+							}}
+							onSelect={updateCaretOverlay}
+							onScroll={updateCaretOverlay}
+							className={`editor-input editor-layer ${previewVisible ? "preview-active" : ""}`}
+							placeholder="Start typing or open a file..."
+						/>
+					</div>
+				</section>
+			</main>
+			<Toaster theme={theme} />
+		</>
 	);
 }
 
@@ -601,13 +613,15 @@ function IconButton({
 	shortcut?: string[];
 	noActiveBorder?: boolean;
 }) {
+	const shortcutLabel = shortcut?.join(" + ");
+
 	return (
 		<button
 			type="button"
 			onClick={onClick}
 			className={`icon-btn ${active ? "active" : ""} ${noActiveBorder ? "no-active-border" : ""}`}
 			aria-label={label}
-			title={label}
+			title={shortcutLabel ? `${label} (${shortcutLabel})` : label}
 		>
 			{icon}
 			{shortcut?.length ? (
