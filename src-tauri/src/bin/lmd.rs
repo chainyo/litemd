@@ -59,14 +59,12 @@ fn resolve_to_absolute(raw_path: &str) -> Result<PathBuf, String> {
         return Ok(path);
     }
 
-    let cwd =
-        env::current_dir().map_err(|err| format!("Unable to read cwd: {err}"))?;
+    let cwd = env::current_dir().map_err(|err| format!("Unable to read cwd: {err}"))?;
     Ok(cwd.join(path))
 }
 
 fn locate_app_binary() -> Result<PathBuf, String> {
-    let exe = env::current_exe()
-        .map_err(|err| format!("Unable to locate CLI binary: {err}"))?;
+    let exe = env::current_exe().map_err(|err| format!("Unable to locate CLI binary: {err}"))?;
 
     let parent = exe
         .parent()
@@ -95,11 +93,12 @@ mod tests {
         let cwd = env::current_dir().expect("read cwd");
         env::set_current_dir(&temp_dir).expect("set cwd");
 
-        let resolved = resolve_to_absolute(
-            temp_file.file_name().unwrap().to_str().unwrap(),
-        )
-        .expect("resolve");
-        assert_eq!(resolved.canonicalize().unwrap(), temp_file.canonicalize().unwrap());
+        let resolved =
+            resolve_to_absolute(temp_file.file_name().unwrap().to_str().unwrap()).expect("resolve");
+        assert_eq!(
+            resolved.canonicalize().unwrap(),
+            temp_file.canonicalize().unwrap()
+        );
 
         env::set_current_dir(cwd).expect("restore cwd");
         let _ = fs::remove_file(temp_file);
@@ -110,9 +109,7 @@ mod tests {
         let missing = "lmd-does-not-exist.txt";
         let result = validate_target(missing);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .contains("File not found"));
+        assert!(result.unwrap_err().contains("File not found"));
     }
 
     #[test]

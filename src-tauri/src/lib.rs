@@ -86,9 +86,7 @@ fn resolve_existing(path: PathBuf) -> Result<PathBuf, FileError> {
     let absolute = if path.is_absolute() {
         path
     } else {
-        std::env::current_dir()
-            .map_err(FileError::from)?
-            .join(path)
+        std::env::current_dir().map_err(FileError::from)?.join(path)
     };
 
     let canonical = absolute
@@ -96,18 +94,13 @@ fn resolve_existing(path: PathBuf) -> Result<PathBuf, FileError> {
         .map_err(|_| FileError::NotFound(absolute.display().to_string()))?;
 
     if canonical.is_dir() {
-        return Err(FileError::IsDirectory(
-            canonical.display().to_string(),
-        ));
+        return Err(FileError::IsDirectory(canonical.display().to_string()));
     }
 
     Ok(canonical)
 }
 
-fn store_current_path(
-    state: &State<FileState>,
-    resolved: PathBuf,
-) -> Result<(), FileError> {
+fn store_current_path(state: &State<FileState>, resolved: PathBuf) -> Result<(), FileError> {
     let mut guard = state
         .current_path
         .lock()
@@ -116,9 +109,7 @@ fn store_current_path(
     Ok(())
 }
 
-fn load_file(
-    target: PathBuf,
-) -> Result<(OpenedFile, PathBuf), FileError> {
+fn load_file(target: PathBuf) -> Result<(OpenedFile, PathBuf), FileError> {
     let resolved = resolve_existing(target)?;
     let data = fs::read(&resolved).map_err(FileError::from)?;
 
@@ -126,8 +117,7 @@ fn load_file(
         return Err(FileError::TooLarge(data.len()));
     }
 
-    let content =
-        String::from_utf8(data).map_err(|_| FileError::InvalidEncoding)?;
+    let content = String::from_utf8(data).map_err(|_| FileError::InvalidEncoding)?;
     let is_markdown = match resolved.extension().and_then(|ext| ext.to_str()) {
         Some(ext) => matches!(
             ext.to_ascii_lowercase().as_str(),
@@ -146,17 +136,13 @@ fn load_file(
     ))
 }
 
-fn write_file_contents(
-    target: &Path,
-    contents: &str,
-) -> Result<(), FileError> {
-    if !target.exists() {
+fn write_file_contents(target: &Path, contents: &str, allow_create: bool) -> Result<(), FileError> {
+    if !allow_create && !target.exists() {
         return Err(FileError::NotFound(target.display().to_string()));
     }
 
     let temp_path = target.with_extension(TEMP_EXTENSION);
-    let mut temp_file =
-        fs::File::create(&temp_path).map_err(FileError::from)?;
+    let mut temp_file = fs::File::create(&temp_path).map_err(FileError::from)?;
     temp_file
         .write_all(contents.as_bytes())
         .map_err(|err| FileError::WriteFailed(err.to_string()))?;
@@ -185,10 +171,34 @@ fn save_file(contents: String, state: State<FileState>) -> Result<SaveResult, Fi
         guard.clone().ok_or(FileError::NoTrackedFile)?
     };
 
-    write_file_contents(&path, &contents)?;
+    write_file_contents(&path, &contents, false)?;
 
     Ok(SaveResult {
         path: path.display().to_string(),
+    })
+}
+
+#[tauri::command]
+fn save_file_as(
+    path: String,
+    contents: String,
+    state: State<FileState>,
+) -> Result<SaveResult, FileError> {
+    let resolved = if Path::new(&path).is_absolute() {
+        PathBuf::from(path)
+    } else {
+        std::env::current_dir().map_err(FileError::from)?.join(path)
+    };
+
+    write_file_contents(&resolved, &contents, true)?;
+
+    let canonical = resolved
+        .canonicalize()
+        .map_err(|_| FileError::NotFound(resolved.display().to_string()))?;
+    store_current_path(&state, canonical.clone())?;
+
+    Ok(SaveResult {
+        path: canonical.display().to_string(),
     })
 }
 
@@ -223,8 +233,7 @@ pub fn run() {
         started_at: Instant::now(),
     };
 
-    let initial_path = parse_initial_path_argument()
-        .and_then(|path| resolve_existing(path).ok());
+    let initial_path = parse_initial_path_argument().and_then(|path| resolve_existing(path).ok());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -237,6 +246,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             open_file,
             save_file,
+            save_file_as,
             initial_file,
             mark_frontend_ready
         ])
@@ -251,7 +261,19 @@ mod tests {
 
     fn temp_path(name: &str) -> PathBuf {
         let mut path = std::env::temp_dir();
-        path.push(format!("{name}-{}", std::process::id()));
+        let pid = std::process::id();
+        let base = Path::new(name);
+        let file_name = match (base.file_stem(), base.extension()) {
+            (Some(stem), Some(ext)) => format!(
+                "{}-{}.{}",
+                stem.to_string_lossy(),
+                pid,
+                ext.to_string_lossy()
+            ),
+            (Some(stem), None) => format!("{}-{}", stem.to_string_lossy(), pid),
+            _ => format!("{name}-{pid}"),
+        };
+        path.push(file_name);
         path
     }
 
@@ -289,7 +311,7 @@ mod tests {
         let path = temp_path("lmd-write.txt");
         fs::write(&path, "first").expect("seed file");
 
-        write_file_contents(&path, "second line").expect("write content");
+        write_file_contents(&path, "second line", false).expect("write content");
         let saved = fs::read_to_string(&path).expect("read content");
         assert_eq!(saved, "second line");
         assert!(
@@ -298,6 +320,27 @@ mod tests {
         );
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn write_file_allows_creation_when_enabled() {
+        let path = temp_path("lmd-new-file.md");
+        let _ = fs::remove_file(&path);
+
+        write_file_contents(&path, "# New file", true).expect("write new file");
+        let saved = fs::read_to_string(&path).expect("read new file");
+        assert_eq!(saved, "# New file");
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn write_file_rejects_missing_path_when_disallowed() {
+        let path = temp_path("lmd-missing-write.txt");
+        let _ = fs::remove_file(&path);
+
+        let result = write_file_contents(&path, "data", false);
+        assert!(matches!(result, Err(FileError::NotFound(_))));
     }
 
     #[test]

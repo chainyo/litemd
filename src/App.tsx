@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+import { homeDir, join } from "@tauri-apps/api/path";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import {
 	Bold,
 	Eye,
@@ -42,6 +43,10 @@ type RemoteFile = {
 	content: string;
 	path: string;
 	is_markdown: boolean;
+};
+
+type SaveResult = {
+	path: string;
 };
 
 type UiStatus = "idle" | "loading" | "saving" | "ready" | "error";
@@ -153,9 +158,53 @@ function App() {
 	};
 
 	const handleSave = async () => {
+		const contentsToSave = editorRef.current?.value ?? content;
 		setStatus("saving");
 		try {
-			await invoke("save_file", { contents: content });
+			const savedExisting = await (async () => {
+				if (!filePath) return false;
+				try {
+					await invoke("save_file", { contents: contentsToSave });
+					return true;
+				} catch (error) {
+					const message = formatError(error, "");
+					if (message.toLowerCase().includes("no tracked file")) {
+						return false;
+					}
+					throw error;
+				}
+			})();
+			if (savedExisting) {
+				setStatus("ready");
+				return;
+			}
+
+			const defaultHome = await homeDir().catch(() => null);
+			const defaultPath = defaultHome
+				? await join(defaultHome, "Untitled.md")
+				: "Untitled.md";
+
+			const targetPath = await save({
+				defaultPath,
+				filters: [
+					{
+						name: "LiteMD files",
+						extensions: ["md", "markdown", "txt"],
+					},
+				],
+			});
+
+			if (!targetPath) {
+				setStatus("ready");
+				return;
+			}
+
+			const saved = await invoke<SaveResult>("save_file_as", {
+				path: targetPath,
+				contents: contentsToSave,
+			});
+			setFilePath(saved.path);
+			setIsMarkdown(isMarkdownPath(saved.path));
 			setStatus("ready");
 		} catch (error) {
 			setStatus("error");
@@ -409,6 +458,14 @@ function App() {
 		updateCaretOverlay();
 	});
 
+	const saveHandlerRef = useRef(handleSave);
+	const openHandlerRef = useRef(handleOpenFile);
+
+	useEffect(() => {
+		saveHandlerRef.current = handleSave;
+		openHandlerRef.current = handleOpenFile;
+	});
+
 	useEffect(() => {
 		const handler = (event: KeyboardEvent) => {
 			const isMod = event.metaKey || event.ctrlKey;
@@ -417,9 +474,9 @@ function App() {
 			if (["s", "o", "m", "t"].includes(key)) {
 				event.preventDefault();
 				if (key === "s") {
-					void handleSave();
+					void saveHandlerRef.current?.();
 				} else if (key === "o") {
-					void handleOpenFile();
+					void openHandlerRef.current?.();
 				} else if (key === "m") {
 					setPreviewEnabled((prev) => !prev);
 				} else if (key === "t") {
