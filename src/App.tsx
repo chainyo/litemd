@@ -29,6 +29,7 @@ import {
 	useRef,
 	useState,
 } from "react";
+import { toast } from "sonner";
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import { Toaster } from "@/components/ui/sonner";
 import {
@@ -36,7 +37,6 @@ import {
 	renderMarkdown,
 	renderPlainText,
 } from "@/lib/markdown.js";
-import { toast } from "sonner";
 import "./App.css";
 
 type RemoteFile = {
@@ -362,20 +362,26 @@ function App() {
 		const baseFontSize = parseFloat(styles.fontSize || "16");
 		const headingMatch = /^#{1,6}\s+/.exec(leading);
 		const headingLevel = headingMatch?.[1]?.length ?? null;
-		const fontSizePx =
-			headingLevel !== null ? baseFontSize * 1.05 : baseFontSize;
+		const headingScale = [1.65, 1.4, 1.2, 1.1, 1.05, 0.9];
+		const fontScale =
+			headingLevel !== null
+				? headingScale[Math.min(headingLevel, headingScale.length) - 1]
+				: 1;
+		const fontSizePx = baseFontSize * fontScale;
 		const fontSize = `${fontSizePx}px`;
 		const baseWeight = Number.parseFloat(styles.fontWeight) || 400;
 		const fontWeight = headingLevel !== null ? 700 : baseWeight;
-		const listIndent = /^\s*[-*+]\s+/.test(leading)
-			? baseFontSize * 1.25
-			: 0;
+		const headingFont =
+			(styles.getPropertyValue("--font-sans") || "").trim() ||
+			styles.fontFamily;
+		const fontFamily = headingLevel !== null ? headingFont : styles.fontFamily;
+		const listIndent = /^\s*[-*+]\s+/.test(leading) ? baseFontSize * 1.25 : 0;
 		const blocklessPrefix = rawLine
 			.replace(/^#{1,6}\s+/, "")
 			.replace(/^\s*[-*+]\s+/, "");
 		const textWidth = measureMarkdownWidth(
 			blocklessPrefix,
-			styles.fontFamily,
+			fontFamily,
 			fontSize,
 			fontWeight,
 			headingLevel,
@@ -386,10 +392,7 @@ function App() {
 		const lineIndex = text.slice(0, lineStart).split("\n").length - 1;
 		const top = paddingTop + lineIndex * lineHeight - scrollTop;
 		const left =
-			paddingLeft +
-			listIndent +
-			textWidth -
-			(editor.scrollLeft ?? 0);
+			paddingLeft + listIndent + textWidth - (editor.scrollLeft ?? 0);
 
 		caretPos.current = { top, left };
 
@@ -493,11 +496,7 @@ function App() {
 
 	return (
 		<>
-			<main
-				className="app-shell"
-				data-status={status}
-				aria-busy={isBusy}
-			>
+			<main className="app-shell" data-status={status} aria-busy={isBusy}>
 				<header className="topbar">
 					<div className="topbar-left">
 						<div className="file-context" title={fileLabel}>

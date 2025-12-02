@@ -26,11 +26,14 @@ export function renderMarkdown(content) {
 	const lines = escaped.split(/\r?\n/);
 	const html = [];
 	const listItems = [];
+	let listHasTasks = false;
 
 	const flushList = () => {
 		if (!listItems.length) return;
-		html.push(`<ul>${listItems.join("")}</ul>`);
+		const className = listHasTasks ? ' class="task-list"' : "";
+		html.push(`<ul${className}>${listItems.join("")}</ul>`);
 		listItems.length = 0;
+		listHasTasks = false;
 	};
 
 	for (const line of lines) {
@@ -44,6 +47,17 @@ export function renderMarkdown(content) {
 
 		const bullet = /^\s*[-*+]\s+(.+)/.exec(line);
 		if (bullet) {
+			const taskMatch = /^\[( |x|X)\]\s*(.*)/.exec(bullet[1]);
+			if (taskMatch) {
+				const status = taskMatch[1].toLowerCase() === "x" ? "done" : "todo";
+				const label = applyInlineFormatting(taskMatch[2] || "");
+				listItems.push(
+					`<li data-task="${status}"><span class="task-icon" aria-hidden="true">${status === "done" ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="M9 12l2 2 4-4"></path></svg>' : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle></svg>'}</span><span class="task-text">${label}</span></li>`,
+				);
+				listHasTasks = true;
+				continue;
+			}
+
 			listItems.push(`<li>${applyInlineFormatting(bullet[1])}</li>`);
 			continue;
 		}
